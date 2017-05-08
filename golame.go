@@ -23,6 +23,14 @@ const (
 
 var filenameRegexp = regexp.MustCompile(`(?i)^(\d{2})( -)? (.+)\.wav$`)
 
+type music struct {
+	artist string
+	album  string
+	title  string
+	track  int
+	path   string
+}
+
 var opts Option
 
 // Lame : XXX
@@ -65,63 +73,74 @@ func (Lame) Run(args []string) int {
 		return ExitError
 	}
 
-	files, err := findWavFiles(opts.InputDir)
+	musics, err := findWavFiles(opts.InputDir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Cannot find target files.\n")
 		return ExitError
 	}
 
-	fileCnt := len(files)
+	fileCnt := len(musics)
 	fmt.Printf("Start encoding (%d files).\n", fileCnt)
 	cnt := 0
 	ret := ExitOK
-	for _, file := range files {
-		src := filepath.Join(opts.InputDir, file)
-		destDir := filepath.Dir(filepath.Join(opts.OutputDir, file))
-		if os.MkdirAll(destDir, 0755) != nil {
-			fmt.Fprintf(os.Stderr, "Cannot create directory '%s'.\n", destDir)
-			ret = ExitError
-			continue
-		}
-		if err := convert(src, destDir); err != nil {
+	for _, music := range musics {
+		if err := convert(music); err != nil {
 			// TODO Message
-			fmt.Fprintf(os.Stderr, "Encode error: %s\n", src)
+			fmt.Fprintf(os.Stderr, "Encode error: %s\n", music.path)
 			fmt.Fprintf(os.Stderr, "    Error: %s\n", err)
 			ret = ExitError
 			continue
 		}
 
 		cnt++
-		fmt.Printf("(%d/%d) Encoded '%s'\n", cnt, fileCnt, src)
+		fmt.Printf("(%d/%d) Encoded '%s'\n", cnt, fileCnt, music.path)
 	}
 
 	return ret
 }
 
-func findWavFiles(root string) (paths []string, err error) {
+func findWavFiles(root string) (musics []music, err error) {
 	files, err := filepath.Glob(filepath.Join(root, "*", "*", "*.*"))
 	if err != nil {
 		return
 	}
 
-	for _, path := range files {
-		filename := filepath.Base(path)
-		if !filenameRegexp.MatchString(filename) {
+	for _, fpath := range files {
+		rest, filename := filepath.Split(fpath)
+		rest, album := filepath.Split(strings.TrimRight(rest, `\/`))
+		_, artist := filepath.Split(strings.TrimRight(rest, `\/`))
+
+		fileparts := filenameRegexp.FindStringSubmatch(filename)
+		if len(fileparts) == 0 {
 			continue
 		}
 
-		relpath, err := filepath.Rel(root, path)
+		relpath, err := filepath.Rel(root, fpath)
 		if err != nil {
 			continue
 		}
 
-		paths = append(paths, relpath)
+		track, _ := strconv.Atoi(fileparts[1])
+		musics = append(musics, music{
+			artist: artist,
+			album:  album,
+			title:  fileparts[3],
+			track:  track,
+			path:   relpath,
+		})
 	}
 
 	return
 }
 
-func convert(srcFile, destDir string) error {
+func convert(music music) error {
+	srcFile := filepath.Join(opts.InputDir, music.path)
+	destDir := filepath.Dir(filepath.Join(opts.OutputDir, music.path))
+	if err := os.MkdirAll(destDir, 0755); err != nil {
+		fmt.Fprintf(os.Stderr, "Cannot create directory '%s'.\n", destDir)
+		return err
+	}
+
 	params := []string{}
 	if opts.QualityOption.Higher {
 		params = append(params, "-h")
@@ -133,20 +152,12 @@ func convert(srcFile, destDir string) error {
 		params = append(params, "-b", strconv.Itoa(opts.QualityOption.Bitrate))
 	}
 
-	path, filename := filepath.Split(srcFile)
-	path, album := filepath.Split(strings.TrimRight(path, `\/`))
-	_, artist := filepath.Split(strings.TrimRight(path, `\/`))
+	params = append(params, "--tt", music.title)
+	params = append(params, "--ta", music.artist)
+	params = append(params, "--tl", music.album)
+	params = append(params, "--tn", strconv.Itoa(music.track))
 
-	matches := filenameRegexp.FindAllStringSubmatch(filename, -1)
-	trackNo, _ := strconv.Atoi(matches[0][1]) // Ignore error
-	title := matches[0][3]
-
-	params = append(params, "--tt", title)
-	params = append(params, "--ta", artist)
-	params = append(params, "--tl", album)
-	params = append(params, "--tn", strconv.Itoa(trackNo))
-
-	destFile := filepath.Join(destDir, fmt.Sprintf("%02d %s.mp3", trackNo, title))
+	destFile := filepath.Join(destDir, fmt.Sprintf("%02d %s.mp3", music.track, music.title))
 	params = append(params, srcFile, destFile)
 
 	return exec.Command("lame", params...).Run()
