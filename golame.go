@@ -8,8 +8,10 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 const version = "1.0.0"
@@ -73,7 +75,7 @@ func (Lame) Run(args []string) int {
 		return ExitError
 	}
 
-	musics, err := findWavFiles(opts.InputDir)
+	musics, err := findMusics(opts.InputDir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Cannot find target files.\n")
 		return ExitError
@@ -81,25 +83,43 @@ func (Lame) Run(args []string) int {
 
 	fileCnt := len(musics)
 	fmt.Printf("Start encoding (%d files).\n", fileCnt)
+
+	wg := &sync.WaitGroup{}
+	mutex := &sync.Mutex{}
+	sem := make(chan struct{}, runtime.NumCPU())
+
 	cnt := 0
 	ret := ExitOK
-	for _, music := range musics {
-		if err := convert(music); err != nil {
-			// TODO Message
-			fmt.Fprintf(os.Stderr, "Encode error: %s\n", music.path)
-			fmt.Fprintf(os.Stderr, "    Error: %s\n", err)
-			ret = ExitError
-			continue
-		}
+	for _, m := range musics {
+		wg.Add(1)
 
-		cnt++
-		fmt.Printf("(%d/%d) Encoded '%s'\n", cnt, fileCnt, music.path)
+		go func(music music) error {
+			defer wg.Done()
+			defer func() { <-sem }()
+
+			sem <- struct{}{}
+			if err := convert(music); err != nil {
+				// TODO Message
+				fmt.Fprintf(os.Stderr, "Encode error: %s\n", music.path)
+				fmt.Fprintf(os.Stderr, "    Error: %s\n", err)
+				ret = ExitError
+				return err
+			}
+
+			mutex.Lock()
+			cnt++
+			mutex.Unlock()
+			fmt.Printf("(%d/%d) Encoded '%s'\n", cnt, fileCnt, music.path)
+
+			return nil
+		}(m)
 	}
+	wg.Wait()
 
 	return ret
 }
 
-func findWavFiles(root string) (musics []music, err error) {
+func findMusics(root string) (musics []music, err error) {
 	files, err := filepath.Glob(filepath.Join(root, "*", "*", "*.*"))
 	if err != nil {
 		return
