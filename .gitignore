@@ -22,3 +22,8 @@ _testmain.go
 *.exe
 *.test
 *.prof
+
+# For Godep
+vendor/
+Godeps/_workspace/
+Godeps/Readme
